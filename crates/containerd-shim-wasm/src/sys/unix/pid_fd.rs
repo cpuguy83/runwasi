@@ -1,22 +1,29 @@
 use std::os::fd::{AsFd, FromRawFd as _, OwnedFd, RawFd};
 
+use containerd_shim::monitor::{monitor_subscribe, wait_pid, Subscription, Topic};
 use libc::pid_t;
+use nix::errno::Errno;
 use nix::sys::wait::{waitid, Id, WaitPidFlag, WaitStatus};
+use nix::unistd::Pid;
 use tokio::io::unix::AsyncFd;
 
 pub(super) struct PidFd {
     fd: OwnedFd,
+    pid: pid_t,
+    subs: Subscription,
 }
 
 impl PidFd {
     pub(super) fn new(pid: impl Into<pid_t>) -> anyhow::Result<Self> {
         use libc::{syscall, SYS_pidfd_open, PIDFD_NONBLOCK};
-        let pidfd = unsafe { syscall(SYS_pidfd_open, pid.into(), PIDFD_NONBLOCK) };
+        let pid = pid.into();
+        let pidfd = unsafe { syscall(SYS_pidfd_open, pid, PIDFD_NONBLOCK) };
         if pidfd == -1 {
             return Err(std::io::Error::last_os_error().into());
         }
         let fd = unsafe { OwnedFd::from_raw_fd(pidfd as RawFd) };
-        Ok(Self { fd })
+        let subs = monitor_subscribe(Topic::Pid)?;
+        Ok(Self { fd, pid, subs })
     }
 
     pub(super) async fn wait(self) -> std::io::Result<WaitStatus> {
@@ -31,13 +38,20 @@ impl PidFd {
             match waitid(
                 Id::PIDFd(fd.as_fd()),
                 WaitPidFlag::WEXITED | WaitPidFlag::WNOHANG,
-            )? {
-                WaitStatus::StillAlive => {
+            ) {
+                Ok(WaitStatus::StillAlive) => {
                     let _ = fd.readable().await?;
                 }
-                status => {
+                Ok(status) => {
                     return Ok(status);
                 }
+                Err(Errno::ECHILD) => {
+                    // The process has already been reaped by the containerd-shim reaper.
+                    // Get the status from there.
+                    let status = wait_pid(self.pid, self.subs);
+                    return Ok(WaitStatus::Exited(Pid::from_raw(self.pid), status));
+                }
+                Err(err) => return Err(err.into()),
             }
         }
     }
