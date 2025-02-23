@@ -291,8 +291,8 @@ async fn run_stress_test(cli: Cli, c8d: impl Containerd) -> Result<()> {
 
 async fn default_entrypoint(client: &containerd::Client, image: impl AsRef<str>) -> Result<Vec<String>> {
     let image = image.as_ref();
-    let image = image.split_once(':').map(|p| p.0).unwrap_or(image);
-    let args = match image {
+    let name = image.split_once(':').map(|p| p.0).unwrap_or(image);
+    let args = match name {
         "ghcr.io/containerd/runwasi/wasi-demo-app" => {
             vec!["/wasi-demo-app.wasm".into(), "echo".into(), "hello".into()]
         }
