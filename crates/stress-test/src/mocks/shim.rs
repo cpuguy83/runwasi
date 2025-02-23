@@ -1,12 +1,16 @@
+use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
+use std::process::{ExitStatus, Output};
+use std::time::Duration;
 
-use anyhow::{Result, ensure};
+use anyhow::{Result, bail, ensure};
 use log::info;
 use oci_spec::runtime::SpecBuilder;
 use serde::Deserialize;
 use tempfile::{TempDir, tempdir_in};
 use tokio::fs::{canonicalize, symlink};
 use tokio::process::Command;
+use tokio::time::sleep;
 use tokio_async_drop::tokio_async_drop;
 
 use super::Task;
@@ -48,41 +52,46 @@ impl Shim {
 
         let pid = std::process::id();
 
-        // Start the shim twice. It seems that with task v3 the first run on the
-        // shim does not return immediately, but rather blocks. Running the shim
-        // twice we make sure that at least one of them will return immediately.
-        let output1 = Command::new(binary.as_ref())
-            .args([
-                "-namespace",
-                &format!("shim-benchmark-{pid}"),
-                "-id",
-                &format!("shim-benchmark-{pid}"),
-                "-address",
-                "/run/containerd/containerd.sock",
-                "start",
-            ])
-            .env("TTRPC_ADDRESS", &socket)
-            .current_dir(dir.path())
-            .output();
+        let mut output = Output {
+            status: ExitStatus::from_raw(1),
+            stderr: b"timeout starting shim".to_vec(),
+            stdout: b"".to_vec(),
+        };
 
-        let output2 = Command::new(binary.as_ref())
-            .args([
-                "-namespace",
-                &format!("shim-benchmark-{pid}"),
-                "-id",
-                &format!("shim-benchmark-{pid}"),
-                "-address",
-                "/run/containerd/containerd.sock",
-                "start",
-            ])
-            .env("TTRPC_ADDRESS", &socket)
-            .current_dir(dir.path())
-            .output();
+        let binary = binary.as_ref();
+        let start_shim = || {
+            Command::new(binary)
+                .args([
+                    "-namespace",
+                    &format!("shim-benchmark-{pid}"),
+                    "-id",
+                    &format!("shim-benchmark-{pid}"),
+                    "-address",
+                    "/run/containerd/containerd.sock",
+                    "start",
+                ])
+                .env("TTRPC_ADDRESS", &socket)
+                .current_dir(dir.path())
+                .output()
+        };
 
-        let output = tokio::select! {
-            o = output1 => o,
-            o = output2 => o
-        }?;
+        for _ in 0..10 {
+            tokio::select! {
+                out = start_shim() => {
+                    output = out?;
+                    if output.status.success() {
+                        break;
+                    }
+                },
+                _ = sleep(Duration::from_secs(2)) => {
+                    // try again
+                }
+            }
+        }
+
+        if !output.status.success() {
+            bail!("failed to start shim: {output:?}");
+        }
 
         let mut address = String::from_utf8(output.stdout)?.trim().to_owned();
         if address.starts_with("{") {
@@ -97,7 +106,7 @@ impl Shim {
             address = parsed.address;
         }
 
-        info!("Connecting to {address}");
+        println!("Connecting to {address}");
         let client = TaskClient::connect(address).await?;
 
         Ok(Shim {
