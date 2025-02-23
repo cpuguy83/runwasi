@@ -139,9 +139,13 @@ async fn run_stress_test(cli: Cli, c8d: impl Containerd) -> Result<()> {
     let shim = c8d.start_shim(shim_path.clone()).await?;
     let shim = Arc::new(shim);
 
+    println!("A");
+
     // create a "pause" container to keep the shim running
     let pause = shim.task(&image, &args).await?;
+    println!("B");
     pause.create().await?;
+    println!("C");
 
     let permits = if parallel == 0 { count } else { parallel };
     let semaphore = Arc::new(Semaphore::new(permits));
@@ -150,6 +154,7 @@ async fn run_stress_test(cli: Cli, c8d: impl Containerd) -> Result<()> {
     let mut tracker = FuturesUnordered::new();
     let setup_start = Instant::now();
 
+    println!("D");
     for _ in 0..count {
         let shim = shim.clone();
         let image = image.clone();
@@ -181,6 +186,7 @@ async fn run_stress_test(cli: Cli, c8d: impl Containerd) -> Result<()> {
             Ok(())
         });
     }
+    println!("E");
 
     let setup_done = barrier.wait().fuse();
     let mut setup_done = pin!(setup_done);
