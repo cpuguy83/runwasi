@@ -84,6 +84,8 @@ impl Shim {
             o = output2 => o
         }?;
 
+        println!("shim output = {output:?}");
+
         let mut address = String::from_utf8(output.stdout)?.trim().to_owned();
         if address.starts_with("{") {
             #[derive(Deserialize)]
@@ -97,7 +99,7 @@ impl Shim {
             address = parsed.address;
         }
 
-        info!("Connecting to {address}");
+        println!("Connecting to {address}");
         let client = TaskClient::connect(address).await?;
 
         Ok(Shim {
